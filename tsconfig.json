@@ -3,7 +3,7 @@
 
   "compilerOptions": {
     "target": "ESNext",
-    "lib": ["ESNext"],
+    "lib": ["ESNext", "DOM"],
     "module": "NodeNext",
     // allowJs conflicts with isolatedDeclarations
     // "allowJs": false,
