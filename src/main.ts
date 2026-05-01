@@ -53,9 +53,7 @@ const collectPostUrls = (page: Page) =>
           Array.from(
             new Set(
               Array.from(
-                document.querySelectorAll<HTMLAnchorElement>(
-                  'a[href*="/p/"], a[href*="/reel/"]',
-                ),
+                document.querySelectorAll<HTMLAnchorElement>('a[href*="/p/"], a[href*="/reel/"]'),
               ).map((anchor) => anchor.href),
             ),
           ),
@@ -151,9 +149,7 @@ const extractPost = (context: BrowserContext, url: string) =>
           }
 
           const bestImage = (media: Record<string, unknown>) => {
-            const imageVersions = media["image_versions2"] as
-              | Record<string, unknown>
-              | undefined
+            const imageVersions = media["image_versions2"] as Record<string, unknown> | undefined
             const candidates = imageVersions?.["candidates"]
 
             if (!Array.isArray(candidates)) {
@@ -202,14 +198,10 @@ const extractPost = (context: BrowserContext, url: string) =>
               'meta[property="og:description"], meta[name="description"]',
             )?.content ?? ""
           const metaTitle =
-            document.querySelector<HTMLMetaElement>('meta[property="og:title"]')?.content ??
-            ""
+            document.querySelector<HTMLMetaElement>('meta[property="og:title"]')?.content ?? ""
           const metaImage =
-            document.querySelector<HTMLMetaElement>('meta[property="og:image"]')?.content ??
-            ""
-          const metaCounts = metaDescription.match(
-            /^([\d,.KkMm]+) likes?, ([\d,.KkMm]+) comments?/,
-          )
+            document.querySelector<HTMLMetaElement>('meta[property="og:image"]')?.content ?? ""
+          const metaCounts = metaDescription.match(/^([\d,.KkMm]+) likes?, ([\d,.KkMm]+) comments?/)
           const metaCaption =
             metaDescription.match(/: "([\s\S]*)"\.\s*$/)?.[1] ??
             metaTitle.match(/Instagram: "([\s\S]*)"$/)?.[1] ??
@@ -251,8 +243,7 @@ const extractPost = (context: BrowserContext, url: string) =>
           return {
             url: location.href,
             shortcode: currentShortcode,
-            productType:
-              typeof media?.["product_type"] === "string" ? media["product_type"] : null,
+            productType: typeof media?.["product_type"] === "string" ? media["product_type"] : null,
             mediaType: typeof media?.["media_type"] === "number" ? media["media_type"] : null,
             timestamp,
             likeCount:
