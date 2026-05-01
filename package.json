@@ -40,18 +40,21 @@
     "prepare": "simple-git-hooks && effect-language-service patch && node scripts/references.ts",
     "prepack": "pnpm run build",
     "release": "bumpp && npm publish",
-    "start": "node src/cli.ts",
+    "start": "node ./src/main.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@effect/platform-node": "^4.0.0-beta.59",
-    "effect": "^4.0.0-beta.59"
+    "effect": "^4.0.0-beta.59",
+    "playwright": "^1.59.1",
+    "which": "^6.0.1"
   },
   "devDependencies": {
     "@effect/language-service": "^0.85.1",
     "@effect/vitest": "^4.0.0-beta.59",
     "@types/node": "24.x.x",
+    "@types/which": "^3.0.4",
     "bumpp": "^11.0.1",
     "oxfmt": "^0.47.0",
     "oxlint": "^1.62.0",
