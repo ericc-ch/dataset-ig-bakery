@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { stringify } from "@std/csv/stringify"
 import { execFileSync } from "node:child_process"
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, isAbsolute, relative } from "node:path"
@@ -42,17 +43,6 @@ const getRepositoryMetadata = () => {
   return JSON.parse(output) as RepositoryMetadata
 }
 
-const csvValue = (value: string | number | null) => {
-  if (value === null) {
-    return ""
-  }
-
-  const text = String(value)
-  return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text
-}
-
-const csvRow = (values: ReadonlyArray<string | number | null>) => values.map(csvValue).join(",")
-
 const rawGithubUrl = (nameWithOwner: string, branch: string, localPath: string) => {
   const normalizedPath = (
     isAbsolute(localPath) ? relative(projectRoot, localPath) : localPath
@@ -84,7 +74,7 @@ const headers = [
   ]).flat(),
 ]
 
-const rows = dataset.map((post) => {
+const rows = dataset.map((post): Array<string | number> => {
   const imageUrls = post.images.map((image) =>
     rawGithubUrl(repository.nameWithOwner, branch, image.localPath),
   )
@@ -96,19 +86,19 @@ const rows = dataset.map((post) => {
     imageDimensions[index] ?? "",
   ]).flat()
 
-  return csvRow([
+  return [
     post.url,
-    post.timestamp,
-    post.likeCount,
-    post.commentCount,
+    post.timestamp ?? "",
+    post.likeCount ?? "",
+    post.commentCount ?? "",
     post.caption,
     post.images.length,
     ...imageColumns,
-  ])
+  ]
 })
 
 mkdirSync(dirname(`${projectRoot}/${outputPath}`), { recursive: true })
-writeFileSync(`${projectRoot}/${outputPath}`, [csvRow(headers), ...rows].join("\n"))
+writeFileSync(`${projectRoot}/${outputPath}`, stringify([headers, ...rows], { headers: false }))
 
 console.log(`Exported ${dataset.length} rows to ${outputPath}`)
 console.log(`Image URLs use ${repository.nameWithOwner}@${branch}`)
