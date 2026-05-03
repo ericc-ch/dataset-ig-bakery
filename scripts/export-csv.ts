@@ -68,6 +68,7 @@ const branch = repository.defaultBranchRef?.name ?? "main"
 const dataset = JSON.parse(
   readFileSync(`${projectRoot}/${datasetPath}`, "utf8"),
 ) as ReadonlyArray<PostSample>
+const maxImageCount = Math.max(0, ...dataset.map((post) => post.images.length))
 
 const headers = [
   "url",
@@ -76,11 +77,11 @@ const headers = [
   "commentCount",
   "caption",
   "imageCount",
-  "firstImageUrl",
-  "firstImageFormula",
-  "imageUrls",
-  "imageFormulas",
-  "imageDimensions",
+  ...Array.from({ length: maxImageCount }, (_, index) => [
+    `image${index + 1}Url`,
+    `image${index + 1}Formula`,
+    `image${index + 1}Dimensions`,
+  ]).flat(),
 ]
 
 const rows = dataset.map((post) => {
@@ -89,6 +90,11 @@ const rows = dataset.map((post) => {
   )
   const imageFormulas = imageUrls.map(imageFormula)
   const imageDimensions = post.images.map((image) => `${image.width ?? ""}x${image.height ?? ""}`)
+  const imageColumns = Array.from({ length: maxImageCount }, (_, index) => [
+    imageUrls[index] ?? "",
+    imageFormulas[index] ?? "",
+    imageDimensions[index] ?? "",
+  ]).flat()
 
   return csvRow([
     post.url,
@@ -97,11 +103,7 @@ const rows = dataset.map((post) => {
     post.commentCount,
     post.caption,
     post.images.length,
-    imageUrls[0] ?? "",
-    imageFormulas[0] ?? "",
-    imageUrls.join(" | "),
-    imageFormulas.join(" | "),
-    imageDimensions.join(" | "),
+    ...imageColumns,
   ])
 })
 
