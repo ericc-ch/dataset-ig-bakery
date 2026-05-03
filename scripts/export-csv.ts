@@ -34,14 +34,10 @@ const datasetPath = "data/dataset.json"
 const outputPath = process.argv[2] ?? "data/dataset.csv"
 
 const getRepositoryMetadata = () => {
-  const output = execFileSync(
-    "gh",
-    ["repo", "view", "--json", "nameWithOwner,defaultBranchRef"],
-    {
-      cwd: projectRoot,
-      encoding: "utf8",
-    },
-  )
+  const output = execFileSync("gh", ["repo", "view", "--json", "nameWithOwner,defaultBranchRef"], {
+    cwd: projectRoot,
+    encoding: "utf8",
+  })
 
   return JSON.parse(output) as RepositoryMetadata
 }
@@ -69,7 +65,9 @@ const imageFormula = (url: string) => `=IMAGE("${url}")`
 
 const repository = getRepositoryMetadata()
 const branch = repository.defaultBranchRef?.name ?? "main"
-const dataset = JSON.parse(readFileSync(`${projectRoot}/${datasetPath}`, "utf8")) as ReadonlyArray<PostSample>
+const dataset = JSON.parse(
+  readFileSync(`${projectRoot}/${datasetPath}`, "utf8"),
+) as ReadonlyArray<PostSample>
 
 const headers = [
   "url",
