@@ -34,6 +34,7 @@
   },
   "scripts": {
     "build": "tsdown",
+    "export:csv": "node scripts/export-csv.ts",
     "format": "oxfmt",
     "lint": "oxlint --type-aware",
     "check": "pnpm run typecheck && pnpm run test && pnpm run lint",
