@@ -1,97 +1,191 @@
-import { NodeRuntime } from "@effect/platform-node"
-import { Console, Duration, Effect } from "effect"
+import { NodeRuntime, NodeServices } from "@effect/platform-node"
+import { Console, Duration, Effect, FileSystem, Path } from "effect"
 import { pathToFileURL } from "node:url"
 import { chromium, type BrowserContext, type Page } from "playwright"
 import which from "which"
 
-export const one = 1
-export const two = 2
-export const add = (a: number, b: number) => a + b
+const config = {
+  instagramProfileUrl: "https://www.instagram.com/hollandbakeryindonesia/",
+  postLimit: 50,
+  maxProfileScrolls: 200,
+  maxScrollsWithoutNewPosts: 3,
+  dataDirectory: "data",
+  imagesDirectoryName: "images",
+  browserProfileDirectory: "../.browser-profile/",
+  browserExecutable: "helium",
+  browserHeadless: false,
+  profileScrollDelayMs: 1_200,
+  profileScrollJitterMs: 1_000,
+  postLoadDelayMs: 800,
+  postLoadJitterMs: 700,
+  betweenPostsDelayMs: 1_500,
+  betweenPostsJitterMs: 1_500,
+} as const
 
-const profileUrl = "https://www.instagram.com/hollandbakeryindonesia/"
-const postLimit = 5
-const maxScrolls = 20
+const profileUrl = config.instagramProfileUrl
+const profileUsername = new URL(profileUrl).pathname.split("/").find(Boolean)
+if (profileUsername === undefined) {
+  throw new Error(`Instagram profile URL must include a username: ${profileUrl}`)
+}
+const dataDirectory = config.dataDirectory
+const imagesDirectory = `${dataDirectory}/${config.imagesDirectoryName}`
+const datasetPath = `${dataDirectory}/dataset.json`
 
 type ImageAsset = {
   index: number
-  type: "image" | "video_thumbnail"
-  url: string
+  sourceUrl: string
   width: number | null
   height: number | null
 }
 
+type SavedImageAsset = Omit<ImageAsset, "sourceUrl"> & {
+  localPath: string
+}
+
 type PostSample = {
   url: string
-  shortcode: string
-  productType: string | null
-  mediaType: number | null
   timestamp: string | null
   likeCount: number | string | null
   commentCount: number | string | null
-  playCount: number | null
-  viewCount: number | null
   caption: string
-  imageCount: number
   images: Array<ImageAsset>
 }
 
-const sleepWithJitter = (baseMs: number, jitterMs: number) =>
-  Effect.sleep(Duration.millis(baseMs + Math.floor(Math.random() * jitterMs)))
+type SavedPostSample = Omit<PostSample, "images"> & {
+  images: Array<SavedImageAsset>
+}
 
-const collectPostUrls = (page: Page) =>
-  Effect.gen(function* () {
-    yield* Effect.promise(() => page.goto(profileUrl, { waitUntil: "domcontentloaded" }))
-    yield* Effect.promise(() => page.waitForLoadState("domcontentloaded"))
+const sleepWithJitter = Effect.fn("sleepWithJitter")(function* (baseMs: number, jitterMs: number) {
+  yield* Effect.sleep(Duration.millis(baseMs + Math.floor(Math.random() * jitterMs)))
+})
 
-    const urls = new Set<string>()
-    let stableScrolls = 0
-    let lastSize = 0
+const sanitizeFilenamePart = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, "-")
 
-    for (let index = 0; index < maxScrolls && urls.size < postLimit; index += 1) {
-      const visibleUrls = yield* Effect.promise(() =>
-        page.evaluate(() =>
-          Array.from(
-            new Set(
-              Array.from(
-                document.querySelectorAll<HTMLAnchorElement>('a[href*="/p/"], a[href*="/reel/"]'),
-              ).map((anchor) => anchor.href),
-            ),
+const postShortcodeFromUrl = (url: string) => url.match(/\/p\/([^/]+)/)?.[1] ?? url
+
+const normalizePostUrl = (url: string) => {
+  const parsed = new URL(url)
+  const shortcode = postShortcodeFromUrl(parsed.pathname)
+  return `https://www.instagram.com/p/${shortcode}/`
+}
+
+const readExistingDataset = Effect.fn("readExistingDataset")(function* () {
+  const fs = yield* FileSystem.FileSystem
+
+  const exists = yield* fs.exists(datasetPath)
+  if (!exists) {
+    return [] as Array<SavedPostSample>
+  }
+
+  const content = yield* fs.readFileString(datasetPath)
+  const parsed = JSON.parse(content) as Array<
+    Omit<SavedPostSample, "images"> & {
+      shortcode?: string
+      images: Array<SavedImageAsset & { url?: string }>
+    }
+  >
+
+  return parsed.map((sample) => ({
+    url: normalizePostUrl(sample.url),
+    timestamp: sample.timestamp,
+    likeCount: sample.likeCount,
+    commentCount: sample.commentCount,
+    caption: sample.caption,
+    images: sample.images.map(({ url: _url, index, width, height, localPath }) => ({
+      index,
+      width,
+      height,
+      localPath,
+    })),
+  }))
+})
+
+const collectPostUrls = Effect.fn("collectPostUrls")(function* (
+  page: Page,
+  existingUrls: ReadonlySet<string>,
+) {
+  yield* Effect.promise(() => page.goto(profileUrl, { waitUntil: "domcontentloaded" }))
+  yield* Effect.promise(() => page.waitForLoadState("domcontentloaded"))
+
+  const urls = new Set<string>()
+  let stableScrolls = 0
+  let lastSize = 0
+
+  for (
+    let index = 0;
+    index < config.maxProfileScrolls && urls.size < config.postLimit;
+    index += 1
+  ) {
+    const visibleUrls = yield* Effect.promise(() =>
+      page.evaluate(() => {
+        const isPinnedPost = (anchor: HTMLAnchorElement) => {
+          const pinnedSelector = [
+            'svg[aria-label*="Pinned"]',
+            'svg[aria-label*="pinned"]',
+            'svg[title*="Pinned"]',
+            'svg[title*="pinned"]',
+            '[aria-label*="Pinned post"]',
+            '[aria-label*="pinned post"]',
+          ].join(", ")
+
+          let element: Element | null = anchor
+          for (let depth = 0; depth < 3 && element !== null; depth += 1) {
+            if (element.querySelector(pinnedSelector) !== null) {
+              return true
+            }
+            element = element.parentElement
+          }
+
+          return false
+        }
+
+        return Array.from(
+          new Set(
+            Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href*="/p/"]'))
+              .filter((anchor) => !isPinnedPost(anchor))
+              .map((anchor) => anchor.href),
           ),
-        ),
-      )
+        )
+      }),
+    )
 
-      for (const url of visibleUrls) {
-        urls.add(url)
+    for (const url of visibleUrls) {
+      const normalizedUrl = normalizePostUrl(url)
+      if (!existingUrls.has(normalizedUrl)) {
+        urls.add(normalizedUrl)
       }
-
-      stableScrolls = urls.size === lastSize ? stableScrolls + 1 : 0
-      lastSize = urls.size
-
-      yield* Console.log(`Seen ${urls.size} post URLs after scroll ${index + 1}`)
-
-      if (stableScrolls >= 3) {
-        break
-      }
-
-      yield* Effect.promise(() =>
-        page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight)),
-      )
-      yield* sleepWithJitter(1_200, 1_000)
     }
 
-    return Array.from(urls).slice(0, postLimit)
-  })
+    stableScrolls = urls.size === lastSize ? stableScrolls + 1 : 0
+    lastSize = urls.size
 
-const extractPost = (context: BrowserContext, url: string) =>
-  Effect.acquireUseRelease(
+    yield* Console.log(`Seen ${urls.size} new post URLs after scroll ${index + 1}`)
+
+    if (stableScrolls >= config.maxScrollsWithoutNewPosts) {
+      break
+    }
+
+    yield* Effect.promise(() =>
+      page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight)),
+    )
+    yield* sleepWithJitter(config.profileScrollDelayMs, config.profileScrollJitterMs)
+  }
+
+  return Array.from(urls).slice(0, config.postLimit)
+})
+
+const extractPost = Effect.fn("extractPost")(function* (context: BrowserContext, url: string) {
+  return yield* Effect.acquireUseRelease(
     Effect.promise(() => context.newPage()),
     (page) =>
       Effect.promise(async () => {
-        const shortcode = url.match(/\/(?:p|reel)\/([^/]+)/)?.[1] ?? url
+        const shortcode = postShortcodeFromUrl(url)
 
         await page.goto(url, { waitUntil: "domcontentloaded" })
         await page.waitForLoadState("domcontentloaded")
-        await page.waitForTimeout(800 + Math.floor(Math.random() * 700))
+        await page.waitForTimeout(
+          config.postLoadDelayMs + Math.floor(Math.random() * config.postLoadJitterMs),
+        )
 
         return page.evaluate<PostSample, string>((currentShortcode) => {
           const findMediaItem = (
@@ -218,6 +312,7 @@ const extractPost = (context: BrowserContext, url: string) =>
               : [media]
 
           const images = mediaItems
+            .filter((item) => item["media_type"] !== 2)
             .map((item, index): ImageAsset | null => {
               const image = bestImage(item)
               if (image === undefined || image === null) {
@@ -226,8 +321,7 @@ const extractPost = (context: BrowserContext, url: string) =>
 
               return {
                 index,
-                type: item["media_type"] === 2 ? "video_thumbnail" : "image",
-                url: image["url"] as string,
+                sourceUrl: image["url"] as string,
                 width: image["width"] as number,
                 height: image["height"] as number,
               }
@@ -242,9 +336,6 @@ const extractPost = (context: BrowserContext, url: string) =>
 
           return {
             url: location.href,
-            shortcode: currentShortcode,
-            productType: typeof media?.["product_type"] === "string" ? media["product_type"] : null,
-            mediaType: typeof media?.["media_type"] === "number" ? media["media_type"] : null,
             timestamp,
             likeCount:
               typeof media?.["like_count"] === "number"
@@ -254,43 +345,107 @@ const extractPost = (context: BrowserContext, url: string) =>
               typeof media?.["comment_count"] === "number"
                 ? media["comment_count"]
                 : (metaCounts?.[2] ?? null),
-            playCount: typeof media?.["play_count"] === "number" ? media["play_count"] : null,
-            viewCount: typeof media?.["view_count"] === "number" ? media["view_count"] : null,
             caption:
               typeof caption?.["text"] === "string"
                 ? caption["text"]
                 : typeof media?.["caption_text"] === "string"
                   ? media["caption_text"]
                   : metaCaption,
-            imageCount: images.length || (metaImage === "" ? 0 : 1),
             images:
               images.length > 0
                 ? images
                 : metaImage === ""
                   ? []
-                  : [{ index: 0, type: "image", url: metaImage, width: null, height: null }],
+                  : [{ index: 0, sourceUrl: metaImage, width: null, height: null }],
           }
         }, shortcode)
       }),
     (page) => Effect.promise(() => page.close()),
   )
+})
 
-const main = Effect.gen(function* () {
-  const profilePath = new URL("../.browser-profile/", import.meta.url)
-  const executablePath = yield* Effect.promise(() => which("helium"))
+const downloadImage = Effect.fn("downloadImage")(function* (image: ImageAsset, post: PostSample) {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  const shortcode = postShortcodeFromUrl(post.url)
+  const filename = [
+    sanitizeFilenamePart(profileUsername),
+    sanitizeFilenamePart(shortcode),
+    image.index,
+  ].join("-")
+  const localPath = path.join(imagesDirectory, `${filename}.jpg`)
+
+  const data = yield* Effect.promise(async () => {
+    const response = await fetch(image.sourceUrl)
+    if (!response.ok) {
+      throw new Error(
+        `Failed to download ${image.sourceUrl}: ${response.status} ${response.statusText}`,
+      )
+    }
+
+    return new Uint8Array(await response.arrayBuffer())
+  })
+  yield* fs.writeFile(localPath, data)
+
+  return {
+    index: image.index,
+    width: image.width,
+    height: image.height,
+    localPath,
+  }
+})
+
+const saveDataset = Effect.fn("saveDataset")(function* (
+  existingSamples: Array<SavedPostSample>,
+  newSamples: Array<PostSample>,
+) {
+  const fs = yield* FileSystem.FileSystem
+
+  yield* fs.makeDirectory(imagesDirectory, { recursive: true })
+
+  const newSamplesWithLocalImages: Array<SavedPostSample> = []
+  for (const sample of newSamples) {
+    const images: Array<SavedImageAsset> = []
+    for (const image of sample.images) {
+      images.push(yield* downloadImage(image, sample))
+    }
+
+    newSamplesWithLocalImages.push({
+      ...sample,
+      url: normalizePostUrl(sample.url),
+      images,
+    })
+  }
+
+  const samples = [...newSamplesWithLocalImages, ...existingSamples]
+
+  yield* fs.writeFileString(datasetPath, JSON.stringify(samples, null, 2))
+  return samples
+})
+
+const main = Effect.fn("main")(function* () {
+  const profilePath = new URL(config.browserProfileDirectory, import.meta.url)
+  const executablePath = yield* Effect.promise(() => which(config.browserExecutable))
+  const existingSamples = yield* readExistingDataset()
+  const existingUrls = new Set(existingSamples.map((sample) => sample.url))
+
+  yield* Console.log(`Loaded ${existingUrls.size} existing posts from ${datasetPath}`)
 
   const context = yield* Effect.acquireRelease(
     Effect.promise(() =>
       chromium.launchPersistentContext(profilePath.pathname, {
         executablePath,
-        headless: false,
+        headless: config.browserHeadless,
       }),
     ),
     (context) => Effect.promise(() => context.close()),
   )
 
-  const page = yield* Effect.promise(() => context.newPage())
-  const postUrls = yield* collectPostUrls(page)
+  const postUrls = yield* Effect.acquireUseRelease(
+    Effect.promise(() => context.newPage()),
+    (page) => collectPostUrls(page, existingUrls),
+    (page) => Effect.promise(() => page.close()),
+  )
 
   yield* Console.log(`Collecting details for ${postUrls.length} posts`)
 
@@ -300,15 +455,17 @@ const main = Effect.gen(function* () {
     samples.push(sample)
 
     yield* Console.log(
-      `Collected ${sample.shortcode}: ${sample.likeCount} likes, ${sample.commentCount} comments`,
+      `Collected ${postShortcodeFromUrl(sample.url)}: ${sample.likeCount} likes, ${sample.commentCount} comments`,
     )
-    yield* sleepWithJitter(1_500, 1_500)
+    yield* sleepWithJitter(config.betweenPostsDelayMs, config.betweenPostsJitterMs)
   }
 
-  yield* Console.log(JSON.stringify(samples, null, 2))
+  const savedSamples = yield* saveDataset(existingSamples, samples)
+
+  yield* Console.log(`Saved ${savedSamples.length} posts to ${datasetPath}`)
 })
 
 const entrypoint = process.argv[1]
 if (entrypoint !== undefined && import.meta.url === pathToFileURL(entrypoint).href) {
-  NodeRuntime.runMain(Effect.scoped(main))
+  NodeRuntime.runMain(Effect.scoped(main()).pipe(Effect.provide(NodeServices.layer)))
 }
